@@ -18,13 +18,13 @@ def main():
     ap.add_argument("--root", type=str, default="data/wilds")
     ap.add_argument("--split", type=str, default="test")
     ap.add_argument("--batch-size", type=int, default=64)
+    ap.add_argument("--prompts", type=str, default=["a photo of a landbird", "a photo of a waterbird"], nargs="+")
     ap.add_argument("--out", type=str, default="outputs/zero_shot.csv")
     args = ap.parse_args()
 
     model, preprocess, tokenizer, device = load_clip(args.arch, args.pretrained)
 
-    prompts = ["a photo of a landbird", "a photo of a waterbird"]
-    text_feats = encode_text(model, tokenizer, prompts, device)
+    text_feats = encode_text(model, tokenizer, args.prompts, device)
 
     subset, metadata_fields = get_waterbirds(args.root, args.split, transform=preprocess, download=False)
     loader = make_loader(subset, batch_size=args.batch_size, shuffle=False)

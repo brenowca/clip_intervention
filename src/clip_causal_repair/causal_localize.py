@@ -3,7 +3,6 @@ import argparse
 from pathlib import Path
 import csv
 import torch
-from tqdm import tqdm
 
 from .clip_loader import load_clip, encode_text, encode_images
 from .waterbirds import get_waterbirds, make_loader
@@ -63,16 +62,14 @@ def main():
     ap.add_argument("--root", type=str, default="data/wilds")
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--subset-size", type=int, default=256, help="eval on a small subset for speed")
-    ap.add_argument("--prompts", type=str, default=None, nargs="+")
+    ap.add_argument("--prompts", type=str, default=["a photo of a landbird", "a photo of a waterbird"], nargs="+")
     ap.add_argument("--out", type=str, default="outputs/scan_effects.csv")
     args = ap.parse_args()
-    
-    prompts = ["a photo of a landbird", "a photo of a waterbird"] if not args.prompts else args.prompts
     
     print(args)
 
     model, preprocess, tokenizer, device = load_clip(args.arch, args.pretrained)
-    text_feats = encode_text(model, tokenizer, prompts, device)
+    text_feats = encode_text(model, tokenizer, args.prompts, device)
 
     subset, _ = get_waterbirds(args.root, "test", transform=preprocess)
     if args.subset_size and len(subset) > args.subset_size:
@@ -111,7 +108,7 @@ def main():
                         x = x.to(device)
                         feats = encode_images(model, x, device)
                         ab_logits.append((100.0 * feats @ text_feats.T).cpu())
-                # restore
+                # restore attention head
                 block.attn.forward = orig
 
                 ab_logits = torch.cat(ab_logits)
