@@ -9,28 +9,50 @@ from .clip_loader import load_clip, encode_text, encode_images
 from .waterbirds import get_waterbirds, make_loader
 
 
-def ablate_head_outputs(block, head_idx: int):
-    """Zero out one attention head's output (per-token) inside a CLIP ViT block."""
+def ablate_head_outputs(block: torch.nn.Module, head_idx: int):
+    """
+    Wraps a CLIP ViT encoder block so that the output of the head
+    with index `head_idx` is zeroed out for every token.
+
+    Parameters
+    ----------
+    block : nn.Module
+        The encoder block from `CLIPVisionModelWithProjection`.  
+        It must expose `block.attention` (the Multi‑Head Self‑Attention
+        module) and `block.num_heads` (the number of heads).
+    head_idx : int
+        Zero‑based index of the head to ablate (must be < block.num_heads).
+
+    Returns
+    -------
+    nn.Module
+        The original attention head's forward method of the block instance, i.e. `block.attn.forward`.
+    """
     attn = block.attn
     orig_forward = attn.forward
 
-    def patched(x, **kwargs):
-        # WARNING: This is a simplified illustrative patch for a scan.
-        B, N, C = x.shape
-        qkv = attn.qkv(x)
-        q, k, v = qkv.chunk(3, dim=-1)
-        q = q.reshape(B, N, attn.num_heads, C // attn.num_heads).permute(0, 2, 1, 3)
-        k = k.reshape(B, N, attn.num_heads, C // attn.num_heads).permute(0, 2, 1, 3)
-        v = v.reshape(B, N, attn.num_heads, C // attn.num_heads).permute(0, 2, 1, 3)
-        attn_scores = (q @ k.transpose(-2, -1)) * attn.scale
-        attn_probs = attn_scores.softmax(dim=-1)
-        out = attn_probs @ v  # [B, heads, N, head_dim]
-        out[:, head_idx, :, :] = 0.0
-        out = out.permute(0, 2, 1, 3).reshape(B, N, C)
-        out = attn.proj(out)
-        return out
+    def patched_attn_forward(self, hidden_states: torch.Tensor, *args, **kwargs):
+        """
+        Calls the original attention forward, then zeros the selected
+        head's contribution before projecting back to `embed_dim`.
+        """
+        # Original attention returns a tuple: (attn_output, attn_weights)
+        attn_output, attn_weights = orig_forward(hidden_states, *args, **kwargs)
 
-    attn.forward = patched
+        # Reshape to isolate heads: [batch, seq_len, num_heads, head_dim]
+        batch, seq_len, embed_dim = attn_output.shape
+        head_dim = embed_dim // self.num_heads
+        attn_output = attn_output.view(batch, seq_len, self.num_heads, head_dim)
+
+        # Zero out the chosen head (per token)
+        attn_output[:, :, head_idx, :] = 0.0
+
+        # Merge heads back to the original shape
+        attn_output = attn_output.view(batch, seq_len, embed_dim)
+
+        return attn_output, attn_weights
+
+    attn.forward = patched_attn_forward.__get__(block.attn, block.attn.__class__)
     return orig_forward
 
 
@@ -41,11 +63,15 @@ def main():
     ap.add_argument("--root", type=str, default="data/wilds")
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--subset-size", type=int, default=256, help="eval on a small subset for speed")
+    ap.add_argument("--prompts", type=str, default=None, nargs="+")
     ap.add_argument("--out", type=str, default="outputs/scan_effects.csv")
     args = ap.parse_args()
+    
+    prompts = ["a photo of a landbird", "a photo of a waterbird"] if not args.prompts else args.prompts
+    
+    print(args)
 
     model, preprocess, tokenizer, device = load_clip(args.arch, args.pretrained)
-    prompts = ["a photo of a landbird", "a photo of a waterbird"]
     text_feats = encode_text(model, tokenizer, prompts, device)
 
     subset, _ = get_waterbirds(args.root, "test", transform=preprocess)
