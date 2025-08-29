@@ -76,35 +76,64 @@ class ProjectionEdit:
             self.hook = None
 
 
-def cmd_fit_direction(args):
-    model, preprocess, tokenizer, device = load_clip(args.arch, args.pretrained)
-    subset, metadata_fields = get_waterbirds(args.root, args.split, transform=preprocess)
-    loader = make_loader(subset, batch_size=args.batch_size, shuffle=True)
+def cmd_fit_direction(arch, pretrained, root, split, max_samples, batch_size, out):
+    model, preprocess, tokenizer, device = load_clip(arch, pretrained)
+    subset, metadata_fields = get_waterbirds(root, split, transform=preprocess)
+    loader = make_loader(subset, batch_size=batch_size, shuffle=True)
 
-    if args.max_samples:
-        idx = list(range(min(args.max_samples, len(subset))))
+    if max_samples:
+        idx = list(range(min(max_samples, len(subset))))
         subset = torch.utils.data.Subset(subset, idx)
-        loader = make_loader(subset, batch_size=args.batch_size, shuffle=True)
+        loader = make_loader(subset, batch_size=batch_size, shuffle=True)
 
     feats, ys, metas = extract_image_features(model, loader, device)
     direction = fit_direction_from_metadata(feats, metas, metadata_fields)
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    np.save(args.out, direction)
-    print(f"✅ Saved direction to {args.out}")
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    np.save(out, direction)
+    print(f"✅ Saved direction to {out}")
 
 
-def cmd_apply(args):
-    model, preprocess, tokenizer, device = load_clip(args.arch, args.pretrained)
-    direction = np.load(args.direction)
+def cmd_apply(arch, pretrained, root, direction, layer, alpha, eval_split, batch_size, out):
+    """
+    Apply a directional edit to the CLIP model and evaluate its performance on a specified dataset split.
 
-    edit = ProjectionEdit(direction, layer=args.layer, alpha=args.alpha)
+    Parameters
+    ----------
+    - arch (str): Architecture of the CLIP model.
+    - pretrained (str): Pretrained weights identifier.
+    - root (str): Path to the dataset root.
+    - direction (str): Filepath to the saved direction vector.
+    - layer (str): Layer to apply the edit to.
+    - alpha (float): Scaling factor for the edit.
+    - eval_split (str): Dataset split for evaluation.
+    - batch_size (int): Batch size for data loading.
+    - out (str): Output CSV file path for evaluation results.
+
+    Steps
+    -----
+    1. Load the CLIP model and related components.
+    2. Load the directional edit vector.
+    3. Apply the edit to the specified layer of the model.
+    4. Encode text prompts for classification.
+    5. Load evaluation data and compute predictions.
+    6. Generate evaluation metrics and save results.
+    7. Remove the applied edit from the model.
+
+    Outputs
+    -------
+    Saves a CSV file with per-group evaluation metrics and prints overall and worst-group accuracies.
+    """
+    model, preprocess, tokenizer, device = load_clip(arch, pretrained)
+    direction = np.load(direction)
+
+    edit = ProjectionEdit(direction, layer=layer, alpha=alpha)
     edit.apply(model)
 
     prompts = ["a photo of a landbird", "a photo of a waterbird"]
     text_feats = encode_text(model, tokenizer, prompts, device)
 
-    subset, metadata_fields = get_waterbirds(args.root, args.eval_split, transform=preprocess)
-    loader = make_loader(subset, batch_size=args.batch_size, shuffle=False)
+    subset, metadata_fields = get_waterbirds(root, eval_split, transform=preprocess)
+    loader = make_loader(subset, batch_size=batch_size, shuffle=False)
 
     ys, preds, metas = [], [], []
     with torch.no_grad():
@@ -122,10 +151,10 @@ def cmd_apply(args):
     meta = torch.cat(metas).numpy()
 
     overall, worst, df = group_report(y_true, y_pred, meta, metadata_fields)
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
     import pandas as pd
-    df.to_csv(args.out, index=False)
-    print(f"Overall acc (after edit): {overall:.3f}\nWorst-group acc (after edit): {worst:.3f}\nSaved per-group to: {args.out}")
+    df.to_csv(out, index=False)
+    print(f"Overall acc (after edit): {overall:.3f}\nWorst-group acc (after edit): {worst:.3f}\nSaved per-group to: {out}")
 
     edit.remove()
 
@@ -155,11 +184,13 @@ def main():
     app.add_argument("--out", type=str, default="outputs/after_edit.csv")
 
     args = ap.parse_args()
+    
+    direction = np.load(args.direction)
 
     if args.cmd == "fit-direction":
-        cmd_fit_direction(args)
+        cmd_fit_direction(args.arch, args.pretrained, args.root, args.split, args.max_samples, args.batch_size, args.out)
     elif args.cmd == "apply":
-        cmd_apply(args)
+        cmd_apply(args.arch, args.pretrained, args.root, direction, args.layer, args.alpha, args.eval_split, args.batch_size, args.out)
 
 
 if __name__ == "__main__":
