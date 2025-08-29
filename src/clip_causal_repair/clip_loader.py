@@ -21,6 +21,9 @@ def encode_text(model, tokenizer, texts: list[str], device):
 
 @torch.no_grad()
 def encode_images(model, images, device):
+    assert next(model.parameters()).device == device, \
+        f"Model device ({next(model.parameters()).device}) does not match target device ({device})"
+    images = images.to(device)
     image_features = model.encode_image(images)
     image_features = image_features / image_features.norm(dim=-1, keepdim=True)
     return image_features
