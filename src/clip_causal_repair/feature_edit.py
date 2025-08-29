@@ -184,13 +184,11 @@ def main():
     app.add_argument("--out", type=str, default="outputs/after_edit.csv")
 
     args = ap.parse_args()
-    
-    direction = np.load(args.direction)
 
     if args.cmd == "fit-direction":
         cmd_fit_direction(args.arch, args.pretrained, args.root, args.split, args.max_samples, args.batch_size, args.out)
     elif args.cmd == "apply":
-        cmd_apply(args.arch, args.pretrained, args.root, direction, args.layer, args.alpha, args.eval_split, args.batch_size, args.out)
+        cmd_apply(args.arch, args.pretrained, args.root, np.load(args.direction), args.layer, args.alpha, args.eval_split, args.batch_size, args.out)
 
 
 if __name__ == "__main__":
