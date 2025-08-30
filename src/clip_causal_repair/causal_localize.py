@@ -3,6 +3,7 @@ import argparse
 from pathlib import Path
 import csv
 import torch
+from tqdm import tqdm
 
 from .clip_loader import load_clip, encode_text, encode_images
 from .waterbirds import get_waterbirds, make_loader
@@ -59,6 +60,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arch", type=str, default="ViT-B-32")
     ap.add_argument("--pretrained", type=str, default="laion2b_s34b_b79k")
+    ap.add_argument("--backend", type=str, default="openclip", choices=["openclip", "hf"])
     ap.add_argument("--root", type=str, default="data/wilds")
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--subset-size", type=int, default=256, help="eval on a small subset for speed")
@@ -68,7 +70,9 @@ def main():
     
     print(args)
 
-    model, preprocess, tokenizer, device = load_clip(args.arch, args.pretrained)
+    model, preprocess, tokenizer, device = load_clip(
+        args.arch, args.pretrained, backend=args.backend
+    )
     text_feats = encode_text(model, tokenizer, args.prompts, device)
 
     subset, _ = get_waterbirds(args.root, "test", transform=preprocess)
@@ -76,7 +80,7 @@ def main():
         subset = torch.utils.data.Subset(subset, list(range(args.subset_size)))
     loader = make_loader(subset, batch_size=args.batch_size, shuffle=False)
 
-    # baseline logits
+    print("Get baseline logits")
     base_logits, base_targets = [], []
     with torch.no_grad():
         for x, y, _ in loader:
@@ -87,7 +91,7 @@ def main():
     base_logits = torch.cat(base_logits)
     base_targets = torch.cat(base_targets)
 
-    # scan each block/head
+    print("Scan each block/head") # 
     vis = model.visual
     blocks = vis.transformer.resblocks
     num_blocks = len(blocks)
@@ -98,7 +102,7 @@ def main():
         w = csv.writer(f)
         w.writerow(["block", "head", "delta_margin_mean"])
 
-        for b in range(num_blocks):
+        for b in tqdm(range(num_blocks), desc="Scanning heads"):
             block = blocks[b]
             for h in range(num_heads):
                 orig = ablate_head_outputs(block, h)
