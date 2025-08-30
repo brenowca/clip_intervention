@@ -16,10 +16,6 @@ from .waterbirds import get_waterbirds, make_loader
 from .group_metrics import group_report, _get_bg_idx
 
 
-def parse_alpha_values(alpha_str: str) -> list[float]:
-    return [float(a) for a in alpha_str.split(',') if a]
-
-
 @torch.no_grad()
 def extract_embeddings(model, loader, device):
     feats, ys, metas = [], [], []
@@ -44,7 +40,7 @@ def main():
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--split-train", type=str, default="val")
     ap.add_argument("--split-test", type=str, default="test")
-    ap.add_argument("--alpha-values", type=str, default="0,0.25,0.5,0.75,1.0")
+    ap.add_argument("--alpha-values", type=float, nargs="+", default=[-1.0, -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
     ap.add_argument("--out-dir", type=str, default="outputs/inlp")
     args = ap.parse_args()
 
@@ -58,7 +54,7 @@ def main():
     prompts = ["a photo of a landbird", "a photo of a waterbird"]
     text_feats = encode_text(model, tokenizer, prompts, device)
 
-    # ---- Train background classifier ----
+    print("Train background classifier")
     train_subset, metadata_fields = get_waterbirds(
         args.root, args.split_train, transform=preprocess
     )
@@ -83,17 +79,16 @@ def main():
     w = (lr.coef_[0] / scaler.scale_).astype(np.float32)
     np.save(out_dir / "w.npy", w)
 
-    # ---- Extract test embeddings ----
+    print("Extract test embeddings")
     test_subset, _ = get_waterbirds(
         args.root, args.split_test, transform=preprocess
     )
     test_loader = make_loader(test_subset, batch_size=args.batch_size, shuffle=False)
     test_feats, y_true, test_meta = extract_embeddings(model, test_loader, device)
 
-    alphas = parse_alpha_values(args.alpha_values)
     rows = []
     w_norm_sq = float(np.dot(w, w)) + 1e-12
-    for alpha in alphas:
+    for alpha in args.alpha_values:
         proj = test_feats - alpha * np.outer(test_feats @ w, w) / w_norm_sq
         proj = proj / np.linalg.norm(proj, axis=1, keepdims=True)
         cos = (test_feats * proj).sum(axis=1)
