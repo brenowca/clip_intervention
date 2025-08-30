@@ -36,6 +36,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arch", type=str, default="ViT-B-32")
     ap.add_argument("--pretrained", type=str, default="laion2b_s34b_b79k")
+    ap.add_argument("--backend", type=str, default="openclip", choices=["openclip", "hf"])
     ap.add_argument("--root", type=str, default="data/wilds")
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--split-train", type=str, default="val")
@@ -47,7 +48,9 @@ def main():
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    model, preprocess, tokenizer, device = load_clip(args.arch, args.pretrained)
+    model, preprocess, tokenizer, device = load_clip(
+        args.arch, args.pretrained, backend=args.backend
+    )
     model.eval()
     model.requires_grad_(False)
 
