@@ -43,37 +43,28 @@ def fit_direction_from_metadata(features: np.ndarray, metadata: np.ndarray, meta
 
 
 class ProjectionEdit:
-    def __init__(self, direction: np.ndarray, layer: str = "final", alpha: float = 1.0):
+    def __init__(self, direction: np.ndarray, alpha: float = 1.0):
         self.u = torch.tensor(direction, dtype=torch.float32)
-        self.layer = layer
         self.alpha = alpha
-        self.hook = None
+        self.handle = None
 
-    def _hook_fn(self, module, inputs, output):
-        # output is [B, D]
-        u = self.u.to(output.device)
-        proj = (output @ u)[:, None] * u[None, :]
-        return output - self.alpha * proj
+    def _hook(self, module, inputs, output):
+        assert output.shape[-1] == self.u.numel(), \
+        f"edit dir dim {self.u.numel()} != output dim {output.shape[-1]}"
+        # output: [B, D] where D is the embed dim (512 for ViT-B/32)
+        u = self.u.to(output.device, dtype=output.dtype)
+        u = u / (u.norm() + 1e-12)
+        # subtract component along u
+        proj = (output @ u).unsqueeze(1) * u.unsqueeze(0)
+        return output - self.alpha * proj  # return new output (no in-place ops)
 
     def apply(self, model):
-        # simple variant: edit the final pooled features
-        if self.layer == "final":
-            # OpenCLIP: model.visual.layernorm_post (just before projection)
-            target = model.visual
-            if hasattr(target, "ln_post"):
-                mod = target.ln_post
-            elif hasattr(target, "layernorm_post"):
-                mod = target.layernorm_post
-            else:
-                raise RuntimeError("Could not find final layer norm to hook")
-            self.hook = mod.register_forward_hook(lambda m, x, y: self._hook_fn(m, x, y))
-        else:
-            raise NotImplementedError("Only layer=final is implemented in this minimal scaffold")
+        self.handle = model.visual.register_forward_hook(self._hook)
 
     def remove(self):
-        if self.hook is not None:
-            self.hook.remove()
-            self.hook = None
+        if self.handle is not None:
+            self.handle.remove()
+            self.handle = None
 
 
 def cmd_fit_direction(arch, pretrained, root, split, max_samples, batch_size, out):
@@ -126,7 +117,7 @@ def cmd_apply(arch, pretrained, root, direction, layer, alpha, eval_split, batch
     model, preprocess, tokenizer, device = load_clip(arch, pretrained)
     direction = np.load(direction)
 
-    edit = ProjectionEdit(direction, layer=layer, alpha=alpha)
+    edit = ProjectionEdit(direction, alpha=alpha)
     edit.apply(model)
 
     prompts = ["a photo of a landbird", "a photo of a waterbird"]
@@ -188,7 +179,7 @@ def main():
     if args.cmd == "fit-direction":
         cmd_fit_direction(args.arch, args.pretrained, args.root, args.split, args.max_samples, args.batch_size, args.out)
     elif args.cmd == "apply":
-        cmd_apply(args.arch, args.pretrained, args.root, np.load(args.direction), args.layer, args.alpha, args.eval_split, args.batch_size, args.out)
+        cmd_apply(args.arch, args.pretrained, args.root, args.direction, args.layer, args.alpha, args.eval_split, args.batch_size, args.out)
 
 
 if __name__ == "__main__":
