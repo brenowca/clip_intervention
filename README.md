@@ -66,6 +66,30 @@ bash scripts/fit_direction.sh
 bash scripts/apply_edit_and_eval.sh
 ```
 
+## Per-layer edits
+The editing API also allows targeting internal layers. The `scripts/edit_directional.py` script can
+fit a background direction and apply it at any module:
+
+```bash
+# 1) fit the direction
+python scripts/edit_directional.py fit-direction --arch ViT-B-32 --root data/wilds \
+    --out edits/water_direction.npy
+
+# 2) sweep α when applying to a specific layer
+for a in 0.0 0.05 0.1 0.2; do
+  python scripts/edit_directional.py apply --direction edits/water_direction.npy \
+    --layer "visual.transformer.resblocks.6.mlp" --alpha $a \
+    --out outputs/layer6_a${a}.csv
+done
+```
+
+Higher `α` removes more of the spurious component but risks **majority collapse**.
+Hooks on an `nn.Parameter` (e.g., OpenCLIP's `visual.proj`) must be wrapped in a
+`LinearProxy` module before registering edits.
+
+See the example config at `configs/per_layer_edit.yaml` and the helper scripts in
+`scripts/` for end-to-end runs.
+
 ---
 
 ## Design sketch

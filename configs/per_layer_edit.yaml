@@ -1,0 +1,7 @@
+# Example configuration for a per-layer directional edit
+arch: ViT-B-32
+pretrained: laion2b_s34b_b79k
+data_root: data/wilds
+direction: edits/water_direction.npy
+layer: visual.transformer.resblocks.6.mlp
+alphas: [0.0, 0.05, 0.1, 0.2]
