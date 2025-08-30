@@ -7,6 +7,7 @@ from tqdm import tqdm
 
 from .clip_loader import load_clip, encode_text, encode_images
 from .waterbirds import get_waterbirds, make_loader
+from .metrics import aggregate_accuracy_metrics
 
 
 def ablate_head_outputs(block: torch.nn.Module, head_idx: int):
@@ -75,21 +76,24 @@ def main():
     )
     text_feats = encode_text(model, tokenizer, args.prompts, device)
 
-    subset, _ = get_waterbirds(args.root, "test", transform=preprocess)
+    subset, metadata_fields = get_waterbirds(args.root, "test", transform=preprocess)
     if args.subset_size and len(subset) > args.subset_size:
         subset = torch.utils.data.Subset(subset, list(range(args.subset_size)))
     loader = make_loader(subset, batch_size=args.batch_size, shuffle=False)
 
     print("Get baseline logits")
-    base_logits, base_targets = [], []
+    base_logits, base_targets, base_meta = [], [], []
     with torch.no_grad():
-        for x, y, _ in loader:
+        for x, y, meta in loader:
             x = x.to(device)
             feats = encode_images(model, x, device)
             base_logits.append((100.0 * feats @ text_feats.T).cpu())
             base_targets.append(y)
+            base_meta.append(meta)
     base_logits = torch.cat(base_logits)
     base_targets = torch.cat(base_targets)
+    base_meta = torch.cat(base_meta)
+    base_pred = base_logits.argmax(dim=-1)
 
     print("Scan each block/head") # 
     vis = model.visual
@@ -100,7 +104,7 @@ def main():
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["block", "head", "delta_margin_mean"])
+        w.writerow(["block", "head", "delta_margin_mean", "delta_overall_acc", "delta_worst_acc"])
 
         for b in tqdm(range(num_blocks), desc="Scanning heads"):
             block = blocks[b]
@@ -116,10 +120,26 @@ def main():
                 block.attn.forward = orig
 
                 ab_logits = torch.cat(ab_logits)
+                ab_pred = ab_logits.argmax(dim=-1)
                 margin_base = base_logits[:, 1] - base_logits[:, 0]
                 margin_ab = ab_logits[:, 1] - ab_logits[:, 0]
                 delta = (margin_ab - margin_base).mean().item()
-                w.writerow([b, h, f"{delta:.6f}"])
+                metrics, _ = aggregate_accuracy_metrics(
+                    base_targets.numpy(),
+                    base_pred.numpy(),
+                    ab_pred.numpy(),
+                    base_meta.numpy(),
+                    metadata_fields,
+                )
+                w.writerow(
+                    [
+                        b,
+                        h,
+                        f"{delta:.6f}",
+                        f"{metrics['delta_overall']:.6f}",
+                        f"{metrics['delta_worst']:.6f}",
+                    ]
+                )
 
     print(f"✅ Saved scan to {args.out}")
 
