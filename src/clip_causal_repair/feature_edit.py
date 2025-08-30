@@ -9,6 +9,7 @@ from tqdm import tqdm
 from .clip_loader import load_clip, encode_text, encode_images
 from .waterbirds import get_waterbirds, make_loader
 from .group_metrics import group_report
+from .hooks import HookManager, LayerAddress, tensor_edit_projection_out
 
 
 @torch.no_grad()
@@ -42,31 +43,6 @@ def fit_direction_from_metadata(features: np.ndarray, metadata: np.ndarray, meta
     return w.astype(np.float32)
 
 
-class ProjectionEdit:
-    def __init__(self, direction: np.ndarray, alpha: float = 1.0):
-        self.u = torch.tensor(direction, dtype=torch.float32)
-        self.alpha = alpha
-        self.handle = None
-
-    def _hook(self, module, inputs, output):
-        assert output.shape[-1] == self.u.numel(), \
-        f"edit dir dim {self.u.numel()} != output dim {output.shape[-1]}"
-        # output: [B, D] where D is the embed dim (512 for ViT-B/32)
-        u = self.u.to(output.device, dtype=output.dtype)
-        u = u / (u.norm() + 1e-12)
-        # subtract component along u
-        proj = (output @ u).unsqueeze(1) * u.unsqueeze(0)
-        return output - self.alpha * proj  # return new output (no in-place ops)
-
-    def apply(self, model):
-        self.handle = model.visual.register_forward_hook(self._hook)
-
-    def remove(self):
-        if self.handle is not None:
-            self.handle.remove()
-            self.handle = None
-
-
 def cmd_fit_direction(arch, pretrained, root, split, max_samples, batch_size, out):
     model, preprocess, tokenizer, device = load_clip(arch, pretrained)
     subset, metadata_fields = get_waterbirds(root, split, transform=preprocess)
@@ -84,7 +60,7 @@ def cmd_fit_direction(arch, pretrained, root, split, max_samples, batch_size, ou
     print(f"✅ Saved direction to {out}")
 
 
-def cmd_apply(arch, pretrained, root, direction, layer, alpha, eval_split, batch_size, out):
+def cmd_apply(arch, pretrained, root, direction, layers, alpha, eval_split, batch_size, out):
     """
     Apply a directional edit to the CLIP model and evaluate its performance on a specified dataset split.
 
@@ -94,7 +70,9 @@ def cmd_apply(arch, pretrained, root, direction, layer, alpha, eval_split, batch
     - pretrained (str): Pretrained weights identifier.
     - root (str): Path to the dataset root.
     - direction (str): Filepath to the saved direction vector.
-    - layer (str): Layer to apply the edit to.
+    - layers (list[str]): Layer addresses to apply the edit to. Each should
+      correspond to a dotted module path in the model. The special keyword
+      ``"final"`` maps to ``"visual"`` (the final visual features).
     - alpha (float): Scaling factor for the edit.
     - eval_split (str): Dataset split for evaluation.
     - batch_size (int): Batch size for data loading.
@@ -115,10 +93,19 @@ def cmd_apply(arch, pretrained, root, direction, layer, alpha, eval_split, batch
     Saves a CSV file with per-group evaluation metrics and prints overall and worst-group accuracies.
     """
     model, preprocess, tokenizer, device = load_clip(arch, pretrained)
-    direction = np.load(direction)
+    direction = torch.tensor(np.load(direction), dtype=torch.float32)
 
-    edit = ProjectionEdit(direction, alpha=alpha)
-    edit.apply(model)
+    # resolve layer names; allow legacy "final" keyword
+    layer_names = ["visual" if l == "final" else l for l in layers]
+    addresses = [LayerAddress(name) for name in layer_names]
+
+    hook_mgr = HookManager(model)
+
+    def _hook(module, inputs, output):
+        u = direction.to(output.device, dtype=output.dtype)
+        return tensor_edit_projection_out(output, u, alpha)
+
+    hook_mgr.register(addresses, _hook)
 
     prompts = ["a photo of a landbird", "a photo of a waterbird"]
     text_feats = encode_text(model, tokenizer, prompts, device)
@@ -147,7 +134,7 @@ def cmd_apply(arch, pretrained, root, direction, layer, alpha, eval_split, batch
     df.to_csv(out, index=False)
     print(f"Overall acc (after edit): {overall:.3f}\nWorst-group acc (after edit): {worst:.3f}\nSaved per-group to: {out}")
 
-    edit.remove()
+    hook_mgr.remove()
 
 
 def main():
@@ -168,7 +155,13 @@ def main():
     app.add_argument("--pretrained", type=str, default="laion2b_s34b_b79k")
     app.add_argument("--root", type=str, default="data/wilds")
     app.add_argument("--direction", type=str, required=True)
-    app.add_argument("--layer", type=str, default="final")
+    app.add_argument(
+        "--layer",
+        dest="layers",
+        action="append",
+        default=["visual"],
+        help="Layer address to edit; may be provided multiple times",
+    )
     app.add_argument("--alpha", type=float, default=1.0)
     app.add_argument("--eval-split", type=str, default="test")
     app.add_argument("--batch-size", type=int, default=64)
@@ -179,7 +172,17 @@ def main():
     if args.cmd == "fit-direction":
         cmd_fit_direction(args.arch, args.pretrained, args.root, args.split, args.max_samples, args.batch_size, args.out)
     elif args.cmd == "apply":
-        cmd_apply(args.arch, args.pretrained, args.root, args.direction, args.layer, args.alpha, args.eval_split, args.batch_size, args.out)
+        cmd_apply(
+            args.arch,
+            args.pretrained,
+            args.root,
+            args.direction,
+            args.layers,
+            args.alpha,
+            args.eval_split,
+            args.batch_size,
+            args.out,
+        )
 
 
 if __name__ == "__main__":
