@@ -67,8 +67,8 @@ class ProjectionEdit:
             self.handle = None
 
 
-def cmd_fit_direction(arch, pretrained, root, split, max_samples, batch_size, out):
-    model, preprocess, tokenizer, device = load_clip(arch, pretrained)
+def cmd_fit_direction(arch, pretrained, backend, root, split, max_samples, batch_size, out):
+    model, preprocess, tokenizer, device = load_clip(arch, pretrained, backend=backend)
     subset, metadata_fields = get_waterbirds(root, split, transform=preprocess)
     loader = make_loader(subset, batch_size=batch_size, shuffle=True)
 
@@ -84,7 +84,7 @@ def cmd_fit_direction(arch, pretrained, root, split, max_samples, batch_size, ou
     print(f"✅ Saved direction to {out}")
 
 
-def cmd_apply(arch, pretrained, root, direction, layer, alpha, eval_split, batch_size, out):
+def cmd_apply(arch, pretrained, backend, root, direction, layer, alpha, eval_split, batch_size, out):
     """
     Apply a directional edit to the CLIP model and evaluate its performance on a specified dataset split.
 
@@ -114,7 +114,7 @@ def cmd_apply(arch, pretrained, root, direction, layer, alpha, eval_split, batch
     -------
     Saves a CSV file with per-group evaluation metrics and prints overall and worst-group accuracies.
     """
-    model, preprocess, tokenizer, device = load_clip(arch, pretrained)
+    model, preprocess, tokenizer, device = load_clip(arch, pretrained, backend=backend)
     direction = np.load(direction)
 
     edit = ProjectionEdit(direction, alpha=alpha)
@@ -157,6 +157,7 @@ def main():
     fit = sub.add_parser("fit-direction")
     fit.add_argument("--arch", type=str, default="ViT-B-32")
     fit.add_argument("--pretrained", type=str, default="laion2b_s34b_b79k")
+    fit.add_argument("--backend", type=str, default="openclip", choices=["openclip", "hf"])
     fit.add_argument("--root", type=str, default="data/wilds")
     fit.add_argument("--split", type=str, default="train")
     fit.add_argument("--batch-size", type=int, default=64)
@@ -166,6 +167,7 @@ def main():
     app = sub.add_parser("apply")
     app.add_argument("--arch", type=str, default="ViT-B-32")
     app.add_argument("--pretrained", type=str, default="laion2b_s34b_b79k")
+    app.add_argument("--backend", type=str, default="openclip", choices=["openclip", "hf"])
     app.add_argument("--root", type=str, default="data/wilds")
     app.add_argument("--direction", type=str, required=True)
     app.add_argument("--layer", type=str, default="final")
@@ -177,9 +179,29 @@ def main():
     args = ap.parse_args()
 
     if args.cmd == "fit-direction":
-        cmd_fit_direction(args.arch, args.pretrained, args.root, args.split, args.max_samples, args.batch_size, args.out)
+        cmd_fit_direction(
+            args.arch,
+            args.pretrained,
+            args.backend,
+            args.root,
+            args.split,
+            args.max_samples,
+            args.batch_size,
+            args.out,
+        )
     elif args.cmd == "apply":
-        cmd_apply(args.arch, args.pretrained, args.root, args.direction, args.layer, args.alpha, args.eval_split, args.batch_size, args.out)
+        cmd_apply(
+            args.arch,
+            args.pretrained,
+            args.backend,
+            args.root,
+            args.direction,
+            args.layer,
+            args.alpha,
+            args.eval_split,
+            args.batch_size,
+            args.out,
+        )
 
 
 if __name__ == "__main__":
